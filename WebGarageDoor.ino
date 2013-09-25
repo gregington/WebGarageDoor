@@ -1,0 +1,267 @@
+// favicon.ico data
+#define WEBDUINO_FAVICON_DATA { 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x10, 0x10, 0x02, 0x00, 0x01, 0x00, 0x01, 0x00, 0xb0, 0x00, \
+                                0x00, 0x00, 0x16, 0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x20, 0x00, \
+                                0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x10, 0x27, \
+                                0x00, 0x00, 0x10, 0x27, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                                0x00, 0x00, 0xff, 0xff, 0xff, 0x00, 0xff, 0xff, 0x00, 0x00, 0xfe, 0x7f, 0x00, 0x00, 0xfe, 0x7f, \
+                                0x00, 0x00, 0xe4, 0x27, 0x00, 0x00, 0xe0, 0x07, 0x00, 0x00, 0xf0, 0x0f, 0x00, 0x00, 0xe3, 0xc7, \
+                                0x00, 0x00, 0x83, 0xc1, 0x00, 0x00, 0x83, 0xc1, 0x00, 0x00, 0xe3, 0xc7, 0x00, 0x00, 0xf0, 0x0f, \
+                                0x00, 0x00, 0xe0, 0x07, 0x00, 0x00, 0xe4, 0x27, 0x00, 0x00, 0xfe, 0x7f, 0x00, 0x00, 0xfe, 0x7f, \
+                                0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                                0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }
+
+#include <SPI.h> 
+#include <Ethernet.h>
+#include <WebServer.h>
+
+// Maximum length of URL parameters and values
+#define NAMELEN 32
+#define VALUELEN 32
+
+// Pin on which we control the opener
+#define RELAY_PIN 2
+
+// Pins for RGB status indicator
+#define RED_PIN 5
+#define GREEN_PIN 6
+#define BLUE_PIN 7
+
+// Pins for door open and closed hall effect sensors
+#define OPEN_SENSOR 8
+#define CLOSED_SENSOR 9
+
+// 
+#define UNKNOWN -1
+#define OPEN 0
+#define CLOSED 1
+
+// How long the we hold the pin high to trigger the door opening
+#define SWITCH_PULSE_MS 1000
+
+// Strings for HTML pages
+P(header) = "<!DOCTYPE html><html><head>"
+    "<title>Garage Door</title>"
+    "<link rel='apple-touch-icon' href='icon.png'>"
+    "<body>";
+P(footer) = "</body></html>";
+P(form) = "<form action='/' method='post'>"
+    "<input type='hidden' name='action' value='open'>"
+    "<input type='submit' value='Open door'>"
+    "</form>"
+    "<form action='/' method='post'>"
+    "<input type='hidden' name='action' value='close'>"
+    "<input type='submit' value='Close door'>"
+    "</form>";
+P(openedMessage) = "<p>Garage door has been opened.</p>";
+P(alreadyOpenMessage) = "<p>Garage door is already open.</p>";
+P(notOpenedMessage) = "<p>Garage door not opened as it is in an unknown state.</p>";
+P(closedMessage) = "<p>Garage door has been closed.</p>";
+P(alreadyClosedMessage) = "<p>Garage door is already closed.</p>";
+P(notClosedMessage) = "<p>Garage door not closed as it is in an unknown state.</p>";
+
+// Prefix for web server URLs. We are serving at the root
+#define PREFIX ""
+WebServer webserver(PREFIX, 80);
+
+/**
+ * Command that serves the default page for controlling the web server.
+ * Responds to either a POST or GET. A parameter of action with a value of "open" or "close"
+ * will open or close the door.
+ */
+void defaultGet(WebServer &server, WebServer::ConnectionType type, char *url_tail, bool tail_complete) {
+  server.httpSuccess();
+  char name[NAMELEN];
+  char value[VALUELEN];
+
+  if (type == WebServer::GET)  {
+    server.printP(header);
+    if (strlen(url_tail)) {
+      URLPARAM_RESULT rc = server.nextURLparam(&url_tail, name, NAMELEN, value, VALUELEN);
+      if (rc != URLPARAM_EOS) {
+        if (strcmp(name, "action") == 0) {
+          performDoorAction(server, value);
+        }
+      }
+    }
+    server.printP(form);
+    server.printP(footer);
+  } else if (type == WebServer::POST) {
+    char name[NAMELEN];
+    while(server.readPOSTparam(name, NAMELEN, value, VALUELEN)) {
+      if (strcmp(name, "action") == 0) {
+        performDoorAction(server, value);
+      }
+    }
+    server.printP(header);
+    server.printP(form);
+    server.printP(footer);    
+  }
+}
+
+/**
+ * Command that returns the current state of the door in HTML.
+ */
+void stateCmd(WebServer &server, WebServer::ConnectionType type, char *url_tail, bool tail_complete) {
+  if (type == WebServer::GET) {
+    int doorState = getDoorState();
+    server.printP(header);
+    switch (doorState) {
+      case OPEN:
+        server.print("Open");
+        break;
+      case CLOSED:
+        server.print("Closed");
+        break;
+      default:
+        server.print("Unknown");
+    }
+    server.printP(footer);
+  } else {
+    server.httpFail();
+  }   
+}
+
+/**
+ * Returns an icon for the web site. This is used by iOS for shortcuts created on the home screen.
+ */
+void iconCmd(WebServer &server, WebServer::ConnectionType type, char *url_tail, bool tail_complete) {
+  P(icon) = {
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 
+    0x00, 0x00, 0x00, 0x48, 0x00, 0x00, 0x00, 0x48, 0x01, 0x03, 0x00, 0x00, 0x00, 0x6f, 0x23, 0x21, 
+    0x04, 0x00, 0x00, 0x00, 0x04, 0x67, 0x41, 0x4d, 0x41, 0x00, 0x00, 0xb1, 0x8f, 0x0b, 0xfc, 0x61, 
+    0x05, 0x00, 0x00, 0x00, 0x06, 0x50, 0x4c, 0x54, 0x45, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xa5, 
+    0xd9, 0x9f, 0xdd, 0x00, 0x00, 0x00, 0xbb, 0x49, 0x44, 0x41, 0x54, 0x28, 0xcf, 0x95, 0x92, 0xc1, 
+    0x0d, 0xc3, 0x20, 0x0c, 0x45, 0x1d, 0xe5, 0xc0, 0x91, 0x11, 0x3c, 0x0a, 0x2b, 0x75, 0x03, 0x18, 
+    0x2d, 0x1b, 0x74, 0x85, 0x8c, 0xc0, 0x91, 0x03, 0x82, 0x7e, 0x5b, 0x50, 0x4a, 0xda, 0x2a, 0x89, 
+    0x4f, 0x4f, 0x02, 0xfc, 0x3f, 0xfe, 0xa6, 0xda, 0x8b, 0xce, 0x29, 0xf8, 0x4e, 0xe4, 0x1a, 0x95, 
+    0xbb, 0xf4, 0xcc, 0xc4, 0xc9, 0x0b, 0xad, 0xa0, 0xe8, 0x40, 0x65, 0x01, 0xed, 0x0c, 0xca, 0x04, 
+    0x0a, 0x16, 0x94, 0xe8, 0x41, 0x86, 0x0c, 0x28, 0x92, 0xd4, 0x3f, 0x4a, 0x4a, 0x76, 0xa2, 0xac, 
+    0x24, 0xfd, 0x8a, 0x92, 0x7b, 0x93, 0xea, 0x1e, 0x48, 0x5d, 0x85, 0x0f, 0xf2, 0xfd, 0x74, 0xa9, 
+    0x9b, 0x52, 0xa1, 0xb5, 0xee, 0xda, 0x45, 0x34, 0xa1, 0xed, 0x60, 0x13, 0x4a, 0x50, 0x64, 0x4a, 
+    0x8d, 0xec, 0x4c, 0x2c, 0x2e, 0x2e, 0xd0, 0xd7, 0xdb, 0xd1, 0x79, 0xa8, 0xe1, 0xb6, 0x38, 0xe0, 
+    0xc9, 0x15, 0x8e, 0xbb, 0xd3, 0x30, 0xff, 0xe3, 0xd7, 0x2f, 0xc7, 0x0c, 0x78, 0x9a, 0xd0, 0x71, 
+    0x7e, 0xe7, 0x13, 0x8f, 0x48, 0x66, 0x6d, 0x2f, 0x24, 0x2d, 0xed, 0x27, 0x59, 0x6e, 0xaa, 0x61, 
+    0x24, 0x4b, 0xd5, 0xb5, 0x92, 0x74, 0x4f, 0x9f, 0x6f, 0xef, 0xcb, 0xd8, 0x35, 0x7f, 0x6d, 0x3b, 
+    0xb5, 0x5e, 0xc0, 0x3d, 0x6a, 0xef, 0xae, 0xd0, 0x67, 0x94, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 
+    0x4e, 0x44, 0xae, 0x42, 0x60, 0x82    
+  };
+  
+  if (type == WebServer::POST) {
+    server.httpFail();
+    return;
+  }
+
+  server.httpSuccess("image/png");
+  
+  if (type == WebServer::GET) {
+    server.writeP(icon, sizeof(icon));
+  }
+}
+
+void setup() {
+  // Enable the Ethernet port
+  pinMode(4, OUTPUT);
+  digitalWrite(4, HIGH);
+
+  // Set output pins for the relay and RGB LED
+  pinMode(RELAY_PIN, OUTPUT);
+  pinMode(RED_PIN, OUTPUT);
+  pinMode(GREEN_PIN, OUTPUT);
+  pinMode(BLUE_PIN, OUTPUT);
+  
+  // Set up the inputs for hall effect sensors.
+  pinMode(OPEN_SENSOR, INPUT_PULLUP);
+  pinMode(CLOSED_SENSOR, INPUT_PULLUP);
+  
+  // Set up the Ethernet
+  delay(250); // Ensure ethernet is fully instantiated
+  byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
+  // Don't use DHCP as we should have a fixed IP for a server
+  byte ip[] = { 192, 168, 2, 239 };
+  byte dns[] = { 192, 168, 2, 1 };
+  byte gw[] = { 192, 168, 2, 1 };
+  byte subnet[] = {255, 255, 255, 0};
+  
+  Ethernet.begin(mac, ip, dns, gw, subnet);
+  
+  // Set up the web server commands
+  webserver.setDefaultCommand(&defaultGet);
+  webserver.addCommand("icon.png", &iconCmd);
+  webserver.addCommand("state", &stateCmd);
+  
+  webserver.begin();
+}
+
+void loop() {
+  webserver.processConnection();
+  displayDoorState(getDoorState());
+}
+
+void performDoorAction(WebServer &server, char* action) {
+  int doorState = getDoorState(); 
+  if (strcmp(action, "open") == 0) {
+    switch(doorState) {
+      case OPEN:
+       server.printP(alreadyOpenMessage);
+        break;
+      case CLOSED:
+        server.printP(openedMessage);
+        toggleDoor();
+        break;
+      case UNKNOWN:
+        server.printP(notOpenedMessage);
+    }
+  } else if (strcmp(action, "close") == 0) {
+    switch(doorState) {
+      case OPEN:
+        server.printP(closedMessage);
+        toggleDoor();
+        break;
+      case CLOSED:
+        server.printP(alreadyClosedMessage);
+        break;
+      case UNKNOWN:
+        server.printP(notClosedMessage);
+    }
+  }
+}
+
+int getDoorState() {
+  if (digitalRead(OPEN_SENSOR) == LOW) {
+    return OPEN;
+  }
+  if (digitalRead(CLOSED_SENSOR) == LOW) {
+    return CLOSED;
+  }
+  return UNKNOWN;
+}
+
+void toggleDoor() {
+  digitalWrite(RELAY_PIN, HIGH);
+  delay(SWITCH_PULSE_MS);
+  digitalWrite(RELAY_PIN, LOW);
+}
+
+void displayDoorState(int doorState) {
+  switch (doorState) {
+    case OPEN:
+      digitalWrite(RED_PIN, LOW);
+      digitalWrite(GREEN_PIN, LOW);
+      digitalWrite(BLUE_PIN, HIGH);
+      break;
+    case CLOSED:
+      digitalWrite(RED_PIN, LOW);
+      digitalWrite(GREEN_PIN, HIGH);
+      digitalWrite(BLUE_PIN, LOW);
+      break;
+    default:
+      digitalWrite(RED_PIN, HIGH);
+      digitalWrite(GREEN_PIN, LOW);
+      digitalWrite(BLUE_PIN, LOW);    
+  }
+}
+
+
